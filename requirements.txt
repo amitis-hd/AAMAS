@@ -1,0 +1,4 @@
+pygame
+shapely
+gymnasium
+numpy
