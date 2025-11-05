@@ -1,0 +1,59 @@
+You are analyzing whether an action worked as expected by considering an agent's observations of the world around it. Compare what you predicted would happen with what actually happened. Given the information below, help the agent rectify its knowledge of its environment by analysing what it has observed, and outputting a concise statement about its environemnt and how it works. The agent is interacting with elements in its environment and observing how they react, and how that differs from what it expected. Your job is to look at these mismatches and output facts about the environment elements, to be kept in the agent's "learned knowledge of the world" field. Infer what a human would infer observing this missmatches, and how the agent can get the results it had hoped to get by performing this action, considering this new learned knowledge of how its world works.
+
+The agent was at environment state: {obs} when it performed action {line} as a step towards achieving goal: {input}. After the action was performed the agent noticed that the environment state did not change as expected in the following ways: {mismatches} It intern observed that the REAL state of its environment after performing that action is: {new_obs}
+
+ANALYSIS PROCESS:
+
+Compare expected vs actual observations and current vs previous actual observations
+Make sure not to confuse what you expected (wrong) with what really happened (current and prev real obs)
+An observation statement: true means the statement is true and statement: false means that statement is false in the environment. Hence isDay: true means it is daytime, and isDay: false means it is nighttime.
+
+1. You will be given inputs in the form: 
+ EXPECTED (WRONG): field = expected_value
+ OBSERVED (REALITY): field = observed_value
+ orm the sentence : you can tell that the field is expected_value just by looking at it. If that is true, continue with the instructions below. Otherwise, (i.e., a property a human present could not directly perceive at that instant, for example a field representing an internal/latent state), you must **begin your response with the single line `NON OBSERVABLE` (all caps)**. Immediately after that line,  explicitly mark the fact as non-observable and state that it **requires empirical confirmation** alongside any factual conclusion about the environment you may have gained. MAKE SURE TO ONLY DO THIS FOR THE EXPECTED VALUES,as the observed value can obviousely be observed
+
+DECISION LOGIC:
+2. Learn from the missmatches in meaningful fields
+
+LEARNING FORMAT:
+
+1–2 sentences with the most logical conclusion based on the observations and evidence — only speculate if no clear logical conclusion exists but there is a clear common sense explanation.
+
+The conclusion must be a factual sentence about the environment in concise simple language that, when added to the original goal, helps the agent make a better plan to achieve its goal in the next planning round.
+
+The conclusion must be worded in terms of environment elements, NOT actions.
+
+✅ Example: The door opens by pushing not pulling
+
+❌ Not acceptable: The agent can’t open the door by pulling
+
+Think about WHY the agent performed the action in the first place to achieve its goal, and what outcome it was expecting. If the mismatch you have observed interferes with the agent achieving its goal, infer like a human would, how the agent can get the same results it was expecting from this action in other ways available to it. If you need to speculate, make sure to be clear about that in your answer (e.g., it might / it is possible).
+
+After producing your answer, examine if this new knowledge means the agent must replan to achieve its original goal. If the agent can continue its plan exactly as is and still achieve all aspects of its goal, start your response with the line:
+
+NO REPLAN NEEDED
+
+
+CRITICAL RULES:
+
+Make sure your answer is worded in a way that is relevant to the agent's goal and considers the action that was just performed as its main idea.
+
+Simply state the learned fact. Do not make things up.
+
+Think and provide the best answer as shown above.
+
+Do not generalize based on common sense if the actual observation contradicts it.
+
+Base conclusions on logical deduction from the evidence/observation fields.
+
+Do not list field comparisons.
+
+Use your memory of previous observations when needed to make a logical conclusion about how different components of the environment work and interact (the conclusion is never about the agent, just about the environment components).
+
+EXAMPLE:
+Goal is for the agent to move the car
+Expected: carmoving: true
+Actual: carmoving: false, parkingbreakon: true
+Actual from previous action step: carmoving: true, parkingbreakon: false
+→ Output: The car will not move while the parking break is on.
