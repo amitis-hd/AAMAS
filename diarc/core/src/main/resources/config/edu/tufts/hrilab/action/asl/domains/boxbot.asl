@@ -2,22 +2,23 @@ import edu.tufts.hrilab.fol.Symbol;
 import edu.tufts.hrilab.fol.Predicate;
 import edu.tufts.hrilab.fol.Variable;
 
-() = pickup["?actor lowers its arms, grabs the item, raises its arms"]() {
+() = pickup["?actor lowers its arms, grabs the object ?object, then raises its arms (?object must be chosen from a value of type object in the pl file)"](Symbol ?object:physobj) {
     conditions: {
-
-        pre: ~isHoldingItem();
+       
     }
+
     effects: {
         success: isHoldingItem();
 
     }
 
-    act: toggleHold;
+    act: toggleHold(?object);
 }
 
-() = putdown["?actor lowers its arms, releases the box, raises its arms"]() {
+() = putdown["?actor lowers its arms, releases the object ?object, raises its arms (?object must be chosen from a value of type object in the pl file) - use for putting things down then it doesnt matter where or just on the floor"](Symbol ?object:physobj) {
     conditions: {
         pre: isHoldingItem();
+        pre : isAt(?object);
   
     }
     effects: {
@@ -25,12 +26,29 @@ import edu.tufts.hrilab.fol.Variable;
    
     }
 
-    act: toggleHold;
+    act: toggleHold(?object);
 }
 
-() = pusharm["?actor lowers its arm and holds the object in its reach down. This action must be followed by liftarm before the agent can move"]() {
+() = putOn["?actor lowers its arms, releases the object ?object in its hands directly on top of the object ?destination, then raises arms - use for putting things down when it metters where you put them"](Symbol ?object:physobj, Symbol ?destination:physobj) {
+    conditions: {
+        pre: isHoldingItem();
+        pre: isAt(?object);
+        pre: isAt(?destination);
+    }
+
+    effects: {
+        success: ~isHoldingItem();
+        success: isOn(?object, ?destination);
+    }
+
+    act: put(?object, ?destination);
+}
+
+
+() = pushDown["?actor lowers its arm and holds the object in its reach down. This action must be followed by liftarm before the agent can move"]() {
     conditions: {
         pre: ~isAgentPushing();
+        pre: ~isHoldingItem();
 
     }
     effects: {
@@ -41,7 +59,7 @@ import edu.tufts.hrilab.fol.Variable;
     act: push;
 }
 
-() = liftarm["?actor raises its arm back up, allowing it to move"]() {
+() = liftarm["?actor raises its arm up"]() {
     conditions: {
         pre: isAgentPushing();
 
@@ -54,10 +72,9 @@ import edu.tufts.hrilab.fol.Variable;
     act: lift;
 }
 
-() = open["?actor opens ?object"](Symbol ?object:physobj) {
+() = openObject["?actor opens ?object (?object must be chosen from a value of type object in the pl file)"](Symbol ?object:physobj) {
     conditions: {
-        pre: equals(?object, chest);
-        pre: ~isholdingItem();
+        
         pre: ~isAgentPushing();
         pre : isAt(?object);
         pre: ~isOpen(?object);
@@ -67,45 +84,124 @@ import edu.tufts.hrilab.fol.Variable;
         success: isOpen(?object);
     }
 
-    act: open;
+    act:open(?object);
 }
 
-() = close["?actor closes ?object"](Symbol ?object:physobj) {
+() = closeObject["?actor closes ?object (?object must be chosen from a value of type object in the pl file)"](Symbol ?object:physobj) {
     conditions: {
-        pre: equals(?object, chest);
-        pre: ~ isholdingItem();
+        
         pre: ~isAgentPushing();
         pre : isAt(?object);
-        pre infer: isOpen(?object);
+        pre : isOpen(?object);
     }
 
     effects: {
         success: ~isOpen(?object);
     }
 
-    act: close;
+    act: close(?object);
 }
 
-() = insertandrotate["?actor inserts the object in its hand into a hole in front of it and rotates it"]() {
+
+() = rotateHand["?actor rotates its wrist 90 degrees clockwise"](Symbol ?degree:degree) {
     conditions: {
-        pre: isholdingItem();
-        pre: ~isAgentPushing();
+        
     }
 
-    act: insert;
-    act: rotate;
+    effects: {
+        success: isHandRotated();
+    }
+
+    act:rotate(?degree);
+}
+
+() = extendHand["?actor extends its hand forward from a nutral position - this action does not insert. it only extends the hand"]() {
+
+    conditions: {
+        
+    }
+
+    effects: {
+        success: isHandExtended();
+    }
+
+    act:extend;
+
+}
+
+() = retractHand["?actor retracts its extended hand back into a nutral position"]() {
+    conditions: {
+        
+    }
+
+    effects: {
+        success: ~isHandExtended();
+    }
+
+    act:retract;
+}
+
+() = putIn["?actor puts the ?object in its hand into the hole shaped cavity ?destination"](Symbol ?object:physobj, Symbol ?destination:physobj) {
+
+    conditions: {
+        pre: isHoldingItem();
+        
+    }
+
+    effects: {
+        
+    }
+
+    act:insert(?object, ?destination);
+}
+
+() = putBetween["?actor puts the ?object in its hands in the cavity between objects ?leftObj and ?rightObj - this action does not make space, it only inserts into a pre existing cavity"](Symbol ?object:physobj, Symbol ?leftObj:physobj, Symbol ?rightObj:physobj) {
+
+    conditions: {
+        pre: isHoldingItem();
+        pre: isAt(?leftObj);
+        pre: isAt(?rightObj);
+    }
+
+    effects: {
+
+    }
+
+    act: insertbetween(?object, ?leftObj, ?rightObj);
+
+}
+
+
+() = grab["?actor closes its fist, grabbing the ?object in its hands"](Symbol ?object:physobj) {
+    conditions: {
+        pre: isAt(?object);
+    }
+
+    effects: {
+        success: isHoldingItem();
+    }
+
+    act: grasp(?object);
+}
+
+() = goThrough["?actor goes through an opening (MUST be marked as opening in the pl file) and changes its ?location (?location field passed in MUST be the AGENT's CURRENT LOCATION )"](Symbol ?location:location) {
+
+
+    conditions: {
+        pre: atOpenning(?location);
+    }
+
+    effects: {
+        success: locationChanged(?location);
+    }
+
+    act: enter;
 }
 
 
 
 
-() = moveTo["?actor moves to the specified object"](Symbol ?object:physobj) {
-    edu.tufts.hrilab.fol.Predicate !query;
-    edu.tufts.hrilab.fol.Predicate !northQuery;
-    edu.tufts.hrilab.fol.Predicate !southQuery;
-    edu.tufts.hrilab.fol.Predicate !westQuery;
-    edu.tufts.hrilab.fol.Predicate !eastQuery;
-
+() = moveTo["?actor moves to the specified ?object"](Symbol ?object:physobj) {
     conditions : {
         pre : ~isAgentPushing();
     }
@@ -114,26 +210,105 @@ import edu.tufts.hrilab.fol.Variable;
     }
 
     op: log(info, "moving to object");
-
-    !query = op:invokeStaticMethod("edu.tufts.hrilab.fol.Factory", "createPredicate", "isAt(?object)");
-    !northQuery = op:invokeStaticMethod("edu.tufts.hrilab.fol.Factory", "createPredicate", "northOf(?object)");
-    !southQuery = op:invokeStaticMethod("edu.tufts.hrilab.fol.Factory", "createPredicate", "southOf(?object)");
-    !westQuery = op:invokeStaticMethod("edu.tufts.hrilab.fol.Factory", "createPredicate", "westOf(?object)");
-    !eastQuery = op:invokeStaticMethod("edu.tufts.hrilab.fol.Factory", "createPredicate", "eastOf(?object)");
     
-    while(~obs:!query) {
-        if(obs:!westQuery) {
-            act:moveEast();
-        }
-        elseif(obs:!northQuery) {
-            act:moveSouth();
-        }
-        elseif(obs:!eastQuery) {
-            act:moveWest();
-        }
-        elseif(obs:!southQuery) {
-            act:moveNorth();
-        }
-    }
+    act:move(?object);
 }
 
+() = sweep["?actor moves ?tool in sweeping motion across ?surface to push ?target"](
+    Symbol ?tool:physobj, 
+    Symbol ?target:physobj, 
+    Symbol ?surface:physobj
+) {
+    conditions: {
+        pre: isHoldingItem();
+        pre: isAt(?target);
+    }
+    effects: {
+        success: isMoved(?target);
+    }
+    act: sweepMotion(?tool, ?target, ?surface);
+    
+}
+
+() = poke["?actor uses pointed ?tool to pierce or puncture ?target and then takes ?tool out of ?target"](
+    Symbol ?tool:physobj, 
+    Symbol ?target:physobj
+) {
+    conditions: {
+        pre: isHoldingItem();
+        pre: isAt(?target);
+    }
+    effects: {
+        success: isPierced(?target);
+    }
+    act: pierceMotion(?tool, ?target);
+    
+}
+
+() = drag["?actor drags ?object along surface to ?destination"](
+    Symbol ?object:physobj, 
+    Symbol ?direction:direction
+) {
+    conditions: {
+        pre: isAt(?object);
+        pre: ~isAgentPushing();
+    }
+    effects: {
+        success: isMoved(?object);
+        success: isAt(?destination);
+    }
+    act: dragMotion(?object, ?destination);
+}
+
+() = squeeze["?actor squeezes the ?object in its hand"](Symbol ?object:physobj) {
+    conditions: {
+        pre: isHoldingItem();
+        pre: isAt(?object);
+    }
+
+    effects: {
+        success: isSqueezed(?object);
+    }
+
+    act: squeezeMotion(?object);
+}
+
+() = goUp["?actor climbs up onto ?object (must be a climbable object)"](Symbol ?object:physobj) {
+    conditions: {
+        pre: ~isElevated();
+        pre: isAt(?object);
+    }
+    
+    effects: {
+        success: isElevated();
+    }
+    
+    act: goUpMotion(?object);
+}
+
+() = goDown["?actor climbs down from elevated position"]() {
+    conditions: {
+        pre: isElevated();
+    }
+    
+    effects: {
+        success: ~isElevated();
+    }
+    
+    act: goDownMotion();
+}
+
+() = putUnder["?actor places ?object underneath ?destination"](Symbol ?object:physobj, Symbol ?destination:physobj) {
+    conditions: {
+        pre: isHoldingItem();
+        pre: isAt(?object);
+        pre: isAt(?destination);
+    }
+
+    effects: {
+        success: ~isHoldingItem();
+        success: isUnder(?object, ?destination);
+    }
+
+    act: putUnderMotion(?object, ?destination);
+}

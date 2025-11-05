@@ -5,11 +5,15 @@
 package edu.tufts.hrilab.boxbot.actions;
 
 public class ToggleHold extends Active {
-    public ToggleHold() { this.maxResponseWait = 200000; }
+    private String objectName;
+
+    public ToggleHold(String objectName) { 
+        this.objectName = objectName;
+        this.maxResponseWait = 200000; }
 
     @Override
     public String getCommand() {
         System.out.println("togglehold action constructor called");
-        return "TOGGLE_HOLD";
+        return String.format("{\"action\": \"TOGGLE_HOLD\", \"object_name\": \"%s\"}", this.objectName);
     }
 }

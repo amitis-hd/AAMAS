@@ -16,18 +16,20 @@ import edu.tufts.hrilab.slug.common.UtteranceType;
 import edu.tufts.hrilab.util.Http;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.Option;
-
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Deque;
 import java.util.HashMap;
+import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
-
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.io.IOException;
-
 import edu.tufts.hrilab.llm.Prompts;
 import edu.tufts.hrilab.llm.Completion;
 import ai.thinkingrobots.trade.TRADEServiceInfo;
@@ -41,49 +43,319 @@ import edu.tufts.hrilab.action.annotations.Action;
 import edu.tufts.hrilab.action.goal.GoalStatus;
 import edu.tufts.hrilab.action.GoalManagerComponent;
 import edu.tufts.hrilab.action.justification.Justification;
-
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-
+import edu.tufts.hrilab.fol.Term;
 import edu.tufts.hrilab.boxbot.actions.Active;
-
 import edu.tufts.hrilab.llm.ObservationComparator;
-
 import edu.tufts.hrilab.llm.openai.response.OpenaiResponses;
+
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.core.type.TypeReference;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.List;
 
 public class LLMGoalParser extends DiarcComponent {
 
+    /*****************************************************/
+    /* */
+    /* Grabbing the asl, pl, and prompt files            */
+    /* */
+    /*****************************************************/
+
+    private Path planningPromptPath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/llm/inputs/planningPrompt.txt");
+    private Path observationPromptPath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/llm/inputs/observationPrompt.txt");
+    private Path guessingPromptPath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/llm/inputs/guessingPrompt.txt");
+    private Path validationPromptPath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/llm/inputs/validationPrompt.txt");
+    private Path divergantPromptPath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/llm/inputs/divergantPrompt.txt");
+
+    private Path aslfilePath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/action/asl/domains/boxbot.asl");
+    private Path belieffilePath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/belief/agents/boxbot.pl");
+
+
+    String aslContents = "";
+    String beliefContents = "";
+    String promptTemplate = "";
+    String observationTemplate = "";
+    String guessingTemplate = "";
+    String validationTemplate = "";
+    String divergantPromptTemplate = "";
+
+    /*****************************************************/
+    /* */
+    /* private variables                    */
+    /* */
+    /*****************************************************/
+
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private String user_id = null;
+
+    /**
+     * Queue for potential failure reasons (hypotheses) suggested by the LLM.
+     */
+    private Deque<String> explorationQueue = new LinkedList<>();
+
+    /**
+     * Queue for the current hypothesis the agent is actively trying to solve.
+     */
+    private Deque<String> clueQueue = new LinkedList<>();
+
+
 
     public LLMGoalParser() {
         super();
     }
 
-    @TRADEService
-    @Action
-    public void parseGoals(Utterance inpututterance) {
 
-        String input = inpututterance.getWordsAsString();
-        log.info("Here is the input to parseGoals " + input);
-        
-        // Use absolute paths directly without relativizing
-        Path aslfilePath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/action/asl/domains/boxbot.asl"); 
-        Path belieffilePath = Paths.get("/mnt/c/Users/hamid/Desktop/myboxbot/diarc/core/src/main/resources/config/edu/tufts/hrilab/belief/agents/boxbot.pl"); 
+    /*****************************************************/
+    /* */
+    /* Given an action, returns true if the action       */
+    /* exists in the asl, and all its preconditions      */
+    /* are met at functioncall time                      */
+    /* */
+    /*****************************************************/
+    private boolean validateAction(String actionLine, String aslContents, StringBuilder failureReason) {
 
-        String aslContents = "";
-        String beliefContents = "";
+        // 1.Parse the incoming action command
+        // Regex to capture the action name and its argument list
+        Pattern pat = Pattern.compile("^([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?:\\((.*)\\))?$");
+        Matcher m = pat.matcher(actionLine.trim());
 
-        try {
-            aslContents = Files.readString(aslfilePath);
-            beliefContents = Files.readString(belieffilePath);
-        } catch (IOException e) {
-            log.error("Error reading input files for LLM prompt.", e);
-            return; // Exit early if files couldn't be read
+        if (!m.matches()) {
+            String issue = "Skipping unparsable action: " + actionLine;
+            // log.warn(issue);
+            failureReason.append(issue);
+            return false;
         }
 
-        String obs = "";
+        String actionName = m.group(1);
+        String inputArgsStr = m.group(2) != null ? m.group(2) : "";
+
+        // Requirement 1: Arguments from the actionLine are put into an array (a List in this case).
+        // For open(door, key), inputArgs becomes ["door", "key"]
+        List<String> inputArgs = inputArgsStr.isEmpty() ?
+                new ArrayList<>() :
+                Arrays.asList(inputArgsStr.split("\\s*,\\s*"));
+
+        // 2. === Find action in ASL and extract its formal parameters ===
+        // Regex for the ASL action signature: () = actionName[...](...) {
+        String actionStartRegex = "\\(\\)\\s*=\\s*" + Pattern.quote(actionName) + "\\[.*?\\]\\(([^)]*)\\)\\s*\\{";
+        Pattern actionStartPattern = Pattern.compile(actionStartRegex);
+        Matcher actionStartMatcher = actionStartPattern.matcher(aslContents);
+
+        if (!actionStartMatcher.find()) {
+            String issue = "Action \"" + actionName + "\" does not exist in ASL.";
+            log.warn(issue);
+            failureReason.append(issue);
+            return false;
+        }
+
+        String aslParamsStr = actionStartMatcher.group(1).trim();
+
+        // Find the matching closing brace by counting braces
+        int actionStart = actionStartMatcher.end();
+        int braceCount = 1;
+        int actionEnd = actionStart;
+
+        while (actionEnd < aslContents.length() && braceCount > 0) {
+            char c = aslContents.charAt(actionEnd);
+            if (c == '{') braceCount++;
+            else if (c == '}') braceCount--;
+            actionEnd++;
+        }
+
+        if (braceCount != 0) {
+            String issue = "Could not find matching closing brace for action \"" + actionName + "\".";
+            failureReason.append(issue);
+            return false;
+        }
+
+        String actionBody = aslContents.substring(actionStart, actionEnd - 1);
+
+        // Extract formal parameter names (e.g., "?object", "?tool") from the ASL definition
+        List<String> aslParamNames = new ArrayList<>();
+        // This regex finds variable names like "?object" from "Symbol ?object:physical"
+        Pattern paramNamePattern = Pattern.compile("\\?([a-zA-Z_][a-zA-Z0-9_]*)");
+        Matcher paramNameMatcher = paramNamePattern.matcher(aslParamsStr);
+        while (paramNameMatcher.find()) {
+            aslParamNames.add(paramNameMatcher.group(1)); // add "object", not "?object"
+        }
+
+        // 3.Validate argument count and create name-to-index mapping
+        if (inputArgs.size() != aslParamNames.size()) {
+            String issue = String.format("Action '%s' expects %d arguments, but received %d.",
+                    actionName, aslParamNames.size(), inputArgs.size());
+            // log.warn(issue);
+            failureReason.append(issue);
+            return false;
+        }
+
+        // Requirement 2: Create a map from the formal parameter name to its argument index.
+        // For (?object, ?tool), this creates {"object": 0, "tool": 1}
+        Map<String, Integer> argName_to_IndexMap = new HashMap<>();
+        for (int i = 0; i < aslParamNames.size(); i++) {
+            argName_to_IndexMap.put(aslParamNames.get(i), i);
+        }
+
+
+        // 4. Find and process all preconditions
+        Pattern conditionsPattern = Pattern.compile("(?i)conditions\\s*:\\s*\\{([\\s\\S]*?)\\}", Pattern.DOTALL);
+        Matcher conditionsMatcher = conditionsPattern.matcher(actionBody);
+
+        if (conditionsMatcher.find()) {
+
+            String conditionsBlock = conditionsMatcher.group(1);
+            Pattern prePattern = Pattern.compile("pre\\s*:\\s*([^;]+);");
+            Matcher preMatcher = prePattern.matcher(conditionsBlock);
+
+            while (preMatcher.find()) {
+                String rawCondition = preMatcher.group(1).trim();
+
+                boolean negated = rawCondition.startsWith("~");
+                String condition = negated ? rawCondition.substring(1).trim() : rawCondition;
+
+                // Parse the precondition into its name and arguments
+                Pattern condPattern = Pattern.compile("([a-zA-Z_][a-zA-Z0-9_]*)\\s*(?:\\((.*)\\))?");
+                Matcher condMatcher = condPattern.matcher(condition);
+
+                if (!condMatcher.matches()) {
+                    String issue = "Could not parse precondition: " + condition;
+                    log.warn(issue);
+                    failureReason.append(issue);
+                    return false;
+                }
+
+                String conditionName = condMatcher.group(1);
+                String condArgsStr = condMatcher.group(2) != null ? condMatcher.group(2).trim() : "";
+
+                // 5. Resolve precondition arguments using the name-to-index map
+                List<Symbol> resolvedArgs = new ArrayList<>();
+                if (!condArgsStr.isEmpty()) {
+                    for (String arg : condArgsStr.split("\\s*,\\s*")) {
+                        if (arg.startsWith("?")) {
+                            String varName = arg.substring(1);
+
+                            // Requirement 3: Look up index from the map, then get the value from the input array.
+                            Integer index = argName_to_IndexMap.get(varName);
+
+                            if (index == null) {
+                                String issue = "Unresolved variable '" + arg + "' in precondition '" + rawCondition + "'. It's not defined in the action's signature.";
+                                // log.error(issue);
+                                failureReason.append(issue);
+                                return false;
+                            }
+
+                            // Use the index to get the actual value from the input arguments list
+                            String resolvedValue = inputArgs.get(index);
+                            resolvedArgs.add(new Symbol(resolvedValue));
+                        } else {
+                            // Handle literal values (if they can appear in preconditions)
+                            resolvedArgs.add(new Symbol(arg));
+                        }
+                    }
+                }
+
+                Term trade_term = new Term(conditionName, resolvedArgs);
+
+                // 6. Call the TRADE service with resolved arguments to check for pre condition validity
+                try {
+                    log.info("Making TRADEService call for '{}' with args: {}\n", conditionName, resolvedArgs);
+
+                    List<?> result = TRADE.getAvailableService(
+                            new TRADEServiceConstraints().name(conditionName).argTypes(Term.class)
+                    ).call(List.class, trade_term);
+
+                    boolean holds = !result.isEmpty();
+                    if (negated) {
+                        holds = !holds; // Apply negation
+                    }
+
+                    if (!holds) {
+                        String issue = "Action " + actionName + " fails because precondition '" + rawCondition + "' is not satisfied. Remember, ~condition() means for the action to be performed condition() must return false. (~ means not/negation)";
+                        log.warn(issue);
+                        failureReason.append(issue);
+                        return false;
+                    }
+                } catch (TRADEException e) {
+                    String issue = "TRADE service failed while checking '" + rawCondition + "': " + e.getMessage();
+                    // log.error(issue, e);
+                    failureReason.append(issue);
+                    return false;
+                }
+            }
+        }
+
+        // If all preconditions pass, the action is valid
+        log.info("Action {} is valid.\n", actionName);
+        return true;
+    }
+
+
+    /*****************************************************/
+    /* */
+    /* given the reason why the previous plan failed     */
+    /* reprompts the llm to regenerate a new plan        */
+    /* */
+    /*****************************************************/
+    private String retryPlan(String issue, String type) {
+        String plan = "";
+        String obs = getObservation();
         try {
-            
+            // Pause for 2 seconds
+            Thread.sleep(2000); 
+            System.out.println("Resumed after 2 seconds.");
+
+        } catch (InterruptedException e) {
+            System.err.println("Thread was interrupted!");
+            // Re-interrupt the current thread to propagate the interruption status
+            Thread.currentThread().interrupt(); 
+        }
+
+        String prompt = "The plan you just produced was invalid:\n" + issue +
+                                    "\nWith that in mind, regenerate a valid plan following the exact same rules as before. Your plan failed because you attemted action: " + type + " when its preconditions were not met. Think about why that could be. Consider satisfying the preconditions and then retrying, a change of plan, etc. Here is the current state of the world: " + obs;
+        if (type.equals("obs")) {
+            prompt = "The plan you just produced was invalid because an action you performed did not have the effects you were expecting. Here is what you learned from your environment from that experience: \n" + issue + "\nWith that in mind, regenerate a valid plan following the exact same rules as before to achieve your main goal. Here is the current state of the world: " + obs;
+        }
+
+        try {
+            OpenaiResponses responseObj = TRADE.getAvailableService(new TRADEServiceConstraints()
+                            .name("responses")
+                            .argTypes(String.class, String.class, String.class))
+                    .call(OpenaiResponses.class,
+                            "o4-mini-2025-04-16",
+                            prompt,
+                            this.user_id);
+
+            this.user_id = responseObj.id;
+
+            if (responseObj.output != null && !responseObj.output.isEmpty()) {
+                for (OpenaiResponses.Output outputItem : responseObj.output) {
+                    if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
+                        plan = outputItem.content.get(0).text;
+                        break;
+                    }
+                }
+            } else {
+                log.error("No output in response.");
+            }
+
+        } catch (TRADEException e) {
+            log.error("Error calling LLM service for parseGoals.", e);
+            return null;
+        }
+
+        log.info("\n\n here is the retried plan: {} \n\n" , plan);
+
+        return plan;
+    }
+
+    public String getObservation() {
+
+        String obs = "";
+
+        try {
+
             obs = TRADE.getAvailableService(new TRADEServiceConstraints().name("getObservationJson").argTypes()).call(String.class);
             try {
                 JsonNode rootNode = objectMapper.readTree(obs);
@@ -92,195 +364,379 @@ public class LLMGoalParser extends DiarcComponent {
             } catch (Exception e) {
                 e.printStackTrace();
             }
-            
-            
-            log.info("Here is the observations {}", obs);
+
         } catch (TRADEException e) {
             log.error("Failed to obtain getObservation service", e);
-            return;
+            return null;
         }
 
-            String promptTemplate =  """
-            You are an AI planner for an autonomous robot agent. Your task is to produce a logically valid, efficient, and **creatively reasoned** plan — a sequence of necessary actions — that the agent can perform to achieve its goal(completely) given the current state of its environment (the position fields do not need to exactly match up for the agent to be at an object; rely on your memory of this conversation and the ROBOT'S INITIAL BELIEFS to determine what is in the agent's reach, as long as it is close enough in position).
+        return obs;
 
-            You must:
-            - Before proposing any actions, assess if the TASK TO ACCOMPLISH is already met by the CURRENT ENVIRONMENT STATE. The plan should always reflect only the remaining necessary actions starting from the current status (given by current environment state).
-            - **Only use actions defined in the .asl file**, and use them **exactly** as named (e.g., `standup()` if it has no argument and combine(blue, red) if it does (NO OTHER FORMAT)).
-            - Respect all preconditions for each action. A precondition must be satisfied at the time the action is executed. A precondition like `pre: isAtBox` means that `isAtBox` must be in the current environment state when the action is performed.
-            - A precondition prefixed with `~` (e.g., `~isHoldingBox`) means the fact must be **false** (i.e., not present in the current state).
-            - Effects (under `success:`) are facts that become true after the action is successfully executed. But they are not always the only effects of the action being performed — use **common sense physical reasoning** to infer additional likely effects when the environment changes.
-            - Given the current observations and the goal, generate a complete sequence of actions that will achieve all parts of the goal exactly as stated. The plan is only valid if all goal conditions are satisfied at the end, without leaving any part incomplete.
-            - The agent's current state is defined by the environment state **plus its beliefs**. If something is not explicitly in the observations, but is present in the beliefs, you may still use it when planning.
-            - Do not just add actions randomly. Performing an action must serve a purpose, bringing the agent closer to achieving its goal — even if the path to the goal involves creative intermediate steps.
-            - FOLLOW THE FORMAT BELOW **EXACTLY** (no extra text or explanation): 
-            action1()
-            obs json you expect after action1 is performed
-            action2()
-            obs json you expect after action2 is performed
-
-            You are encouraged to:
-            - Use **creative chaining** of available actions to satisfy missing preconditions.
-            - Use **objects, tools, or other entities from the beliefs file** even if they are not mentioned in the observations, if logically relevant.
-            - Consider indirect strategies: if the goal is blocked, take steps to make it achievable (e.g., moving obstacles, opening containers, repositioning yourself).
-            - Exploit opportunities to perform necessary setup actions early so later actions become simpler.
-
-            TASK TO ACCOMPLISH:
-            {GOAL}
-
-            CURRENT ENVIRONMENT STATE (observations):  
-            {OBS}
-
-            OUTPUT FORMAT:
-            Return a **valid and logically ordered** plan using only the actions from the .asl file. Each step should include:
-
-            1. The action name (e.g., `moveToBox()`) (DO NOT INCLUDE ANY OTHER CHARS ON THIS LINE. JUST ACTION NAME AND PARENTHESES, **EVEN IF THERE ARE NO ARGUMENTS STILL INCLUDE '()'**)
-            2. The ENVIRONMENT STATE (observations) JSON (all in one line, no \n characters in there.):
-            - Edit the JSON's **boolean**/**string** observation values to represent what you expect them to be after the action is executed. **Use `null` for values that are irrelevant or not booleans or strings, including but not limited to all position values**.
-            - USE THE ORIGINAL ENVIRONMENT OBSERVATION TO GUIDE YOUR STARTING VALUES (maintain which are booleans, which are strings, etc).
-
-            - Only include fields from the observation JSON, in the same order.
-            - Do **not** explain the reasoning.
-            - The plan must be valid: all preconditions must be met at the time each action is executed.
-            - Only include actions from the .asl file and use them exactly as named.
-            - IMPORTANT: **Use your common sense, the success effects, and the robot's beliefs to predict what the observation boolean fields would be. Then ensure the predicted observation values allow the next action’s preconditions to be met.**
-
-            ROBOT'S INITIAL BELIEFS (.pl format):  
-            {BELIEFS}
-
-            AVAILABLE ACTIONS (.asl format):  
-            {ASL}
-
-            EXAMPLE: 
-            Given the goal clean the room, and actions moveto(location), pickup(), putdown() among others, and observation {isHoldingObject: false, agentLocation: [10,10] , toyLocation: [50,50] , chestLocation: [100,100]}, the plan would be:
-            moveto(50,50)
-            {isHoldingObject: false, agentLocation: null , toyLocation: null , chestLocation: null}
-            pickup()
-            {isHoldingObject: true, agentLocation: null , toyLocation: null , chestLocation: null}
-            moveto(100,100)
-            {isHoldingObject: true, agentLocation: null , toyLocation: null , chestLocation: null}
-            putdown()
-            {isHoldingObject: false, agentLocation: null , toyLocation: null , chestLocation: null}
-
-            ACCEPTABLE format examples:
-            action that takes no arguments: standup() 
-            action that takes one argument: goto(door)
-            action that takes two arguments: mix(blue, red)
-
-            UNACCEPTABLE format examples (do not make these mistakes):
-            action that takes no arguments: standup 
-            action that takes one argument: goto(door())
-            action that takes two arguments: mix(blue, red()
-
-
-            """;
-
-        
-
-        OpenaiResponses response;
-        String new_user_id = "";
-        String answer = "";
-        String filledPrompt = "";
-
-     try {
-        filledPrompt = promptTemplate
-            .replace("{GOAL}", input)
-            .replace("{OBS}", obs)
-            .replace("{BELIEFS}", beliefContents)
-            .replace("{ASL}", aslContents);
-        response = TRADE.getAvailableService(new TRADEServiceConstraints()
-            .name("responses")
-            .argTypes(String.class, String.class, String.class))
-            .call(OpenaiResponses.class, "o3-mini-2025-01-31", filledPrompt, null);
-        
-        log.info("answer: " + response);
-        new_user_id = response.id;
-        
-        if (response.output != null && !response.output.isEmpty()) {
-            log.info(" output: " + response.output);
-            
-            // Iterate through the output to find the 'message' type
-            for (OpenaiResponses.Output outputItem : response.output) {
-                if ("message".equals(outputItem.type)) {
-                    if (outputItem.content != null && !outputItem.content.isEmpty()) {
-                        answer = outputItem.content.get(0).text;
-                        log.info("Answer from LLM: " + answer); // Add a log for the successful answer
-                        break; // Exit the loop once the message is found
-                    } else {
-                        log.error("Message output has no content.");
-                    }
-                }
-            }
-        } else {
-            log.error("No output in response.");
-        }
-    } catch (TRADEException e) {
-        log.error("Error calling LLM service for parseGoals.", e);
-        return;
     }
 
-        
 
-        String[] actions = answer.split("\n");
-        // 1) Safely look up the submitGoal service
+
+
+
+
+
+
+
+    /*****************************************************/
+    /* */
+    /* The goal parsing trade service called by the      */
+    /* config file                                       */
+    /* */
+    /*****************************************************/
+    @TRADEService
+    @Action
+    public void parseGoals(Utterance inpututterance) {
+
+
+        String originalGoal = inpututterance.getWordsAsString();
+        log.info("User prompt recieved by LLMGoalParser: {} \n\n" , originalGoal);
+        try {
+            aslContents = Files.readString(aslfilePath);
+            beliefContents = Files.readString(belieffilePath);
+            promptTemplate = Files.readString(planningPromptPath);
+            observationTemplate = Files.readString(observationPromptPath);
+            guessingTemplate = Files.readString(guessingPromptPath);
+            validationTemplate = Files.readString(validationPromptPath);
+            divergantPromptTemplate = Files.readString(divergantPromptPath);
+        } catch (IOException e) {
+            log.error("Error reading input files for LLM prompt.", e);
+        }
+
+
+        // Safely look up the submitGoal service
         TRADEServiceInfo submitGoalSvc;
         try {
             submitGoalSvc = TRADE.getAvailableService(
-                new TRADEServiceConstraints()
-                .name("submitGoal")
-                .argTypes(Predicate.class)
+                    new TRADEServiceConstraints()
+                            .name("submitGoal")
+                            .argTypes(Predicate.class)
             );
         } catch (TRADEException e) {
             log.error("Failed to obtain submitGoal service", e);
             return;
-        
         }
 
-        // First submit an initialization goal to ensure environment is ready
-        Predicate initPredicate = Factory.createPredicate("getObservation", Factory.createSymbol("self"));
-        try {
-            // Submit the initialization goal
-            long initGoalId = submitGoalSvc.call(Long.class, initPredicate);
-            log.info("Submitted initialization goal [{}]: {}", initGoalId, initPredicate);
-            
-            // Give initialization time to complete
-            try {
-                Thread.sleep(500);
-            } catch (InterruptedException e) {
-                log.warn("Sleep interrupted while waiting for initialization", e);
-                Thread.currentThread().interrupt(); // Restore interrupted status
-            }
-            
-            // Now proceed with submitting the action goals...
-            
-        } catch (TRADEException e) {
-            log.error("Failed to submit initialization goal:", e);
-        }
-
-        // 2) Regex to capture action name + args
+        // Regex to capture action name + args
         Pattern pat = Pattern.compile("^(\\w+)\\(([^)]*)\\)$");
 
-        int actionIndex = 0;
-
-        String new_obs = "";
-        String new_knowledge = "";
-        String obs_answer = "";
+        
 
 
-        while (actionIndex < actions.length) {
-            String line = actions[actionIndex].trim();
-            line = line.replaceAll("[^a-zA-Z()]", "");
+        // Initialize state variables for the main loop
+        String obs = getObservation();
+        List<String> actions = new ArrayList<>();   // CHANGED: was String[]
+        int actionIndex = -1;
+        String new_knowledge = "The agent's location field is in the format overalplace-obj1-obj2... where overall place is room/outdoors, and the obj are any object the agent is next to. This is an accurate representation of the agent's position and reachable items. The location of the agent hence does not require emperical testing.";
 
-            log.info("Here is the sanitized action: {}", line);
+        boolean cluePopped = false; 
+        boolean clueAdded = false;
+
+        String additional_prompt = "";
+
+        String explenation = "";
+        String divAnswer = "";
+        String finalCheck = "";
+
+        
+
+
+        while (true) {
+            if (actionIndex == actions.size()) {
+                log.warn("The plan has succeeded?");
+
+                obs = getObservation();
+
+                try {
+
+                    log.info("Checking for goal acomplishment");
+
+                    OpenaiResponses response = TRADE.getAvailableService(new TRADEServiceConstraints()
+                                    .name("responses")
+                                    .argTypes(String.class, String.class, String.class))
+                            .call(OpenaiResponses.class, "o4-mini-2025-04-16", "You were given a goal " + originalGoal + " and now have come to the end of your plan. Your job is to assess if ALL ASPECTS OF THIS GOAL have been achieved or proven to be impossible. You must check your current observations of the world: " + obs + " for all observable effects, as well as your conversation history. You also must check your conversation history for evidance of checking non observable effects of ALL ELEMENTS of the goal, and their successful assertion. If there is a part of the goal that has not been achieved or confirmed, reply with an explenation of what that is. Otherwise, return DONE (all caps).", this.user_id);
+
+                    this.user_id = response.id;
+                 
+
+                   
+                    if (response.output != null && !response.output.isEmpty()) {
+                        for (OpenaiResponses.Output outputItem : response.output) {
+                            if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
+                                finalCheck = outputItem.content.get(0).text;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (finalCheck.isEmpty() || finalCheck.trim().equalsIgnoreCase("DONE")) {
+                        log.info("Plan succeeded !!!!!!!!!!!!!!!!!!!!!!!");
+                        break; // Exit the main while loop
+                    }
+
+                    log.info("LLM's check answer:\n {}\n\n", finalCheck);
+
+                    actionIndex = -1;
+                    
+
+
+                } catch (TRADEException e) {
+                    log.error("Error calling LLM service for planning. Aborting.", e);
+                    return; // Exit the method on planning failure
+                }
+
+         
+            }
+            // =========================================================================
+            // I. PLANNING PHASE: Generate a new plan if the current one is finished,
+            // or if a replan is needed. setting index larger than the size forces replanning
+            // =========================================================================
+            if (actionIndex > actions.size() || actionIndex == -1) {  
+                log.info("\n\nPLANNING\n\n");
+              
+
+                String newClue = "";
+
+                //If explorationQueue is not empty, but clueQueue is empty, we are starting a new exploration process
+                if (!explorationQueue.isEmpty() && clueQueue.isEmpty()) {
+                    //pop the top element of exploration queue and put it onto clue queue
+                    newClue = explorationQueue.pollFirst();
+                    clueQueue.addLast(newClue);
+                    log.info("Popped hypothesis '{}' from exploration queue. Adding to active clue queue.\n\n", newClue);
+                }
+
+                else if (cluePopped || clueAdded) {
+                    if (explorationQueue.isEmpty()) {
+                        log.info("No valid plan exists, sorry.");
+                        break;
+                    }
+
+                    newClue = explorationQueue.pollFirst();
+
+
+                    while (newClue.equals("POP CLUE")) {
+
+                        String removed = clueQueue.pollFirst();
+                        log.info("Giving up on hypothesis {}\n" , removed);
+
+                    }
+
+                    clueQueue.addLast(newClue);
+            
+                }
+
+                clueAdded = false;
+                cluePopped = false;
+
+                log.info("Current list of clues left to explore: {}\n\n", explorationQueue);
+                log.info("Current clues for replanning: {}\n\n", clueQueue);
+
+
+                String goalForPrompt = originalGoal;
+
+                // If we are working on a clue, formulate the prompt around it.
+                if (!clueQueue.isEmpty()) {
+                    List<String> processed = new ArrayList<>();
+                    int size = clueQueue.size();
+                    int i = 0;
+
+                    for (String clue : clueQueue) {
+                        i++;
+                        if (i < size) {
+                            // Split and keep only the part before "Workaround subplan"
+                            String[] parts = clue.split("Workaround subplan", 2);
+                            processed.add(parts[0].trim());
+                        } else {
+                            // For the last element, keep it as-is
+                            processed.add(clue.trim());
+                        }
+                    }
+
+                    String clues = String.join(" and ", processed);
+                    goalForPrompt = String.format(
+                        "To achieve the main goal '%s', the agent is currently investigating the hypothesis that: '%s'. Please provide a plan to achieve the main goal, by assuming the hypothesis is true and the way to do it.",
+                        originalGoal, clues
+                    );
+                }
+
+                // Add any newly learned knowledge to the prompt
+                if (!new_knowledge.isEmpty()) {
+                    goalForPrompt += " Additionally, make sure to consider this new learned fact about your environment: " + new_knowledge;
+                }
+
+                //divergant planning
+                try {
+                    // Pause for 2 seconds
+                    Thread.sleep(2000); 
+                    System.out.println("Resumed after 2 seconds.");
+
+                } catch (InterruptedException e) {
+                    System.err.println("Thread was interrupted!");
+                    // Re-interrupt the current thread to propagate the interruption status
+                    Thread.currentThread().interrupt(); 
+                }
+
+                obs = getObservation();
+
+                try {
+
+                    log.info("Divergant planning");
+                    String divfilledPrompt = divergantPromptTemplate
+                            .replace("{goal}", goalForPrompt)
+                            .replace("{obs}", obs)
+                            .replace("{beliefContents}", beliefContents)
+                            .replace("{aslContents}", aslContents);
+
+                    OpenaiResponses response = TRADE.getAvailableService(new TRADEServiceConstraints()
+                                    .name("responses")
+                                    .argTypes(String.class, String.class, String.class))
+                            .call(OpenaiResponses.class, "o4-mini-2025-04-16", finalCheck + "\n" + additional_prompt + " \n" + divfilledPrompt, this.user_id);
+
+                    this.user_id = response.id;
+                 
+
+                   
+                    if (response.output != null && !response.output.isEmpty()) {
+                        for (OpenaiResponses.Output outputItem : response.output) {
+                            if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
+                                divAnswer = outputItem.content.get(0).text;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (divAnswer.isEmpty() || divAnswer.trim().equalsIgnoreCase("DONE")) {
+                        log.info("LLM provided no new actions or indicated completion. Ending goal execution.");
+                        break; // Exit the main while loop
+                    }
+
+                    log.info("LLM's divergance:\n {}\n\n", divAnswer);
+                    
+
+
+                } catch (TRADEException e) {
+                    log.error("Error calling LLM service for planning. Aborting.", e);
+                    return; // Exit the method on planning failure
+                }
+
+
+
+                //Get plan
+                try {
+                    try {
+                        // Pause for 2 seconds
+                        Thread.sleep(2000); 
+                        System.out.println("Resumed after 2 seconds.");
+
+                    } catch (InterruptedException e) {
+                        System.err.println("Thread was interrupted!");
+                        // Re-interrupt the current thread to propagate the interruption status
+                        Thread.currentThread().interrupt(); 
+                    }
+
+                    obs = getObservation();
+                    log.info("\n\nobservation before planning : \n {}\n\n", obs);
+                    String filledPrompt = promptTemplate
+                            .replace("{GOAL}", goalForPrompt)
+                            .replace("{OBS}", obs)
+                            .replace("{BELIEFS}", beliefContents)
+                            .replace("{plan}", divAnswer.split("Reasoning")[1])
+                            .replace("{ASL}", aslContents);
+
+                    filledPrompt += " IMPORTANT: make sure to base all your expected observation fields on 1.What you have learned through experience from your environment (priority), carefully, without over generalizing, and 2. Common sense and why you chose the actions to achieve the goal. **Make sure to refer to the conversation memory and learn from your mistakes, but do not change things you were right about.** VERY IMPORTANT: make sure (especially when replanning) that your plan is the steps the agent must take starting from its current state. consider what it has already acomplished, and do not repeat those actions in your plan. You must at each point check 1. what do i have left to acomplish (acomplish means that aspect of the goal is currently satisfied, it DOES NOT mean you attempted it and failed), and 2. how do i acomplish it?";
+
+                    OpenaiResponses response = TRADE.getAvailableService(new TRADEServiceConstraints()
+                                    .name("responses")
+                                    .argTypes(String.class, String.class, String.class))
+                            .call(OpenaiResponses.class, "o4-mini-2025-04-16", finalCheck + "\n" + additional_prompt + "\n"  + filledPrompt, this.user_id);
+
+                    this.user_id = response.id;
+                    additional_prompt = "";
+                    finalCheck = "";
+
+                    String answer = "";
+                    if (response.output != null && !response.output.isEmpty()) {
+                        for (OpenaiResponses.Output outputItem : response.output) {
+                            if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
+                                answer = outputItem.content.get(0).text;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (answer.isEmpty() || answer.trim().equalsIgnoreCase("DONE")) {
+                        log.info("LLM provided no new actions or indicated completion. Ending goal execution.");
+                        break; // Exit the main while loop
+                    }
+
+                    log.info("LLM's plan:\n {}\n\n", answer);
+                    // explenation = answer.split("PLAN")[0];
+                    actions = new ArrayList<>(Arrays.asList(answer.split("\n")));   
+                    actionIndex = 0; // Reset to execute the new plan from the beginning
+
+                } catch (TRADEException e) {
+                    log.error("Error calling LLM service for planning. Aborting.", e);
+                    return; // Exit the method on planning failure
+                }
+            }
+
+            // =========================================================================
+            // II. EXECUTION PHASE: Execute the current action from the plan.
+            // =========================================================================
+            String line = actions.get(actionIndex).trim();   
+            line = line.replaceAll("[^a-zA-Z0-9(),]", "");
+            
+
+
+            log.info("Executing action: {} \n\n", line);
 
             Matcher m = pat.matcher(line);
             if (!m.matches()) {
                 log.warn("Skipping unparsable action: {}", line);
-                actionIndex++;  
+
+                if ("END_VALIDATION".equals(line)) {
+                    log.warn("ending validation");
+                    // remove the most recently added sentence in new_knowledge that starts with "VALIDATION:"
+                    int idx = originalGoal.lastIndexOf("VALIDATION:");
+                    if (idx != -1) {
+                        int endIdx = originalGoal.indexOf(".", idx);
+                        if (endIdx != -1) {
+                            // include the period in the removal
+                            originalGoal = originalGoal.substring(0, idx) 
+                                        + originalGoal.substring(endIdx + 1).trim();
+                        } else {
+                            // no period found, just cut everything from VALIDATION: onward
+                            originalGoal = originalGoal.substring(0, idx).trim();
+                        }
+                    }
+                }
+
+                actionIndex++;
                 continue;
             }
 
+            // Validate action and its preconditions before execution
+          
+            log.info("\n\n VALIDATING\n\n");
+            StringBuilder failureReason = new StringBuilder();
+            if (!validateAction(actions.get(actionIndex), aslContents, failureReason)) {
+                log.warn("Action validation failed: {}. Requesting a new plan.", failureReason.toString());
+                additional_prompt = "The plan you just produced was invalid:\n" + failureReason.toString() +
+                                    "\nWith that in mind, regenerate a valid plan following the rules below. Your plan failed because you attemted action: " + actions.get(actionIndex) + " when its preconditions were not met. Think about why that could be. Consider satisfying the preconditions and then retrying, a change of plan, etc.";
+                actionIndex = actions.size() + 1;
+                continue; // Restart the loop with the new plan
+            }
+
+
+            log.info("\n\nPERFORMING\n\n");
+
+            // Submit the validated goal
             String actionName = m.group(1);
-            String argsGroup  = m.group(2).trim();
+            String argsGroup = m.group(2).trim();
 
             List<Symbol> symbols = new ArrayList<>();
             symbols.add(Factory.createSymbol("self"));
@@ -290,355 +746,342 @@ public class LLMGoalParser extends DiarcComponent {
                 }
             }
 
-
             Predicate predicate = Factory.createPredicate(actionName, symbols);
-            GoalStatus state = GoalStatus.fromString("FAILED"); 
-            
+            GoalStatus state = GoalStatus.fromString("UNKNOWN");
 
             try {
                 long goalId = submitGoalSvc.call(long.class, predicate);
                 log.info("Submitted [{}]: {}", goalId, predicate);
 
-                while (state != GoalStatus.fromString("SUCCEEDED")) {
+                // Monitor the goal's status until it succeeds or fails
+                while (state != GoalStatus.fromString("SUCCEEDED") && state != GoalStatus.fromString("FAILED")) {
                     try {
                         Thread.sleep(30);
-                        // Get the goal status using the registered TRADE service
-                        try {
-                            
-                            state = TRADE.getAvailableService(new TRADEServiceConstraints().name("getGoalStatus").argTypes(Long.class)).call(GoalStatus.class, goalId);
-                        } catch (TRADEException e) {
-                            log.error("Failed to obtain submitGoal service", e);
-                            return;
-        
-                        }
-
-                        
+                        state = TRADE.getAvailableService(new TRADEServiceConstraints().name("getGoalStatus").argTypes(Long.class)).call(GoalStatus.class, goalId);
                     } catch (InterruptedException e) {
                         log.warn("Sleep interrupted while waiting for goal status", e);
-                        Thread.currentThread().interrupt(); // Restore interrupted status
+                        Thread.currentThread().interrupt();
+                    } catch (TRADEException e) {
+                        log.error("Failed to get goal status service", e);
+                        state = GoalStatus.fromString("FAILED"); // Assume failure if status is unavailable
                     }
                 }
 
-                //get the observations
-                
-                try {
-                    new_obs = TRADE.getAvailableService(new TRADEServiceConstraints().name("getObservationJson").argTypes()).call(String.class);
+            } catch (TRADEException e) {
+                log.error("Failed to submit goal: {}", predicate, e);
+                state = GoalStatus.fromString("FAILED");
+            }
 
-                    try{
-                        JsonNode rootNode = objectMapper.readTree(new_obs);
-                        JsonNode observationNode = rootNode.get("observation");
-                        new_obs = observationNode.toString();
-                    }catch (Exception e) {
+            // =========================================================================
+            // III. OBSERVATION & LEARNING PHASE: Process the action's outcome.
+            // =========================================================================
+            String new_obs = getObservation();
+
+            if (state == GoalStatus.fromString("SUCCEEDED")) {
+                /***************************/
+                /* SUCCESS CASE            */
+                /***************************/
+                
+                log.info("Action [{}] succeeded.\n\n", predicate);
+                List<String> mismatches = null; 
+                String missmatch_input = null; 
+
+                if(!actions.get(actionIndex + 1).equals("FAILURE")) {
+                
+                    // Check for mismatches between expected and actual observations
+                    
+                    try {
+                        // 1. Initialize a JSON mapper and define the map type
+                        ObjectMapper mapper = new ObjectMapper();
+                        TypeReference<HashMap<String, Object>> typeRef = new TypeReference<>() {};
+
+                        // 2. Parse the JSON strings into Map objects
+                        Map<String, Object> expectedObsMap = mapper.readValue(actions.get(actionIndex + 1), typeRef);
+                        Map<String, Object> actualObsMap = mapper.readValue(new_obs, typeRef);
+
+                        // 3. Remove the 'location' and '*Pos' fields from the maps
+                        expectedObsMap.keySet().removeIf(key -> key.equals("location") || key.endsWith("Pos"));
+                        actualObsMap.keySet().removeIf(key -> key.equals("location") || key.endsWith("Pos"));
+
+                        // 4. Convert the filtered maps back into JSON strings
+                        String filteredExpectedObsJson = mapper.writeValueAsString(expectedObsMap);
+                        String filteredActualObsJson = mapper.writeValueAsString(actualObsMap);
+
+                        // 5. Pass the new filtered JSON strings to the comparator
+                        mismatches = ObservationComparator.getMismatches(filteredExpectedObsJson, filteredActualObsJson);
+
+                    } catch (com.fasterxml.jackson.core.JsonProcessingException e) {
+                        // Handle potential JSON parsing/serialization errors
                         e.printStackTrace();
                     }
-                  
-                    
-                    log.info("Here is the observation {}", new_obs);
-                } catch (TRADEException e) {
-                    log.error("Failed to obtain getObservation service", e);
-                    return;
-                }
-
-                //prompt the llm to see if the opbservations are as it expected
-
-                List<String> mismatches = ObservationComparator.getMismatches(actions[actionIndex + 1], new_obs);
-
-                if (!mismatches.isEmpty()) {
-                    mismatches.forEach(System.out::println);
-                
-
-
-                
-                    String obs_prompt = 
-                        "You are analyzing whether an action worked as expected. Compare what you predicted would happen with what actually happened.\n\n" +
-
-                        "**The agent was at environment state: " + obs + "\n when it performed action " + line + " as a step towards achieving goal:  " + input + " .\nAfter the action was performed the agent noticed that the environment state did not change as expected in the following ways: \n" + mismatches + " \n" + "It intern observed that the REAL state of its environment after performing that action is: " + new_obs + "\n"  +
-                        
-                        "Remember, the expected observation is invalid. It was what you expected when you made the plan, and now you are learning what you were wrong about based on the real observation." +
-                        "If your previous belief was incorrect, you must deduce the correct environmental rule using the real observation only.\n" +
-                    
-                        
-                        "ANALYSIS PROCESS:\n" +
-                        "1. Compare expected vs actual observations and current vs previous actual observations\n" +
-                        "Make sure not to confuse what you expected (wrong) with what really happened (current and prev real obs) \n\n" +
-                        " An observation statement: true means the statement is true and statement: false means that statement is false in the environment. Hence isDay: true means it is daytime, and isDay: false means it is nighttime. \n\n" +
-                        
-                        "DECISION LOGIC:\n" +
-                        "2. If there's a mismatch in any meaningful field → Learn from it\n\n" +
-                        
-                        "LEARNING FORMAT:\n" +
-                        "1-2 sentences with the most logical conclusion based on the observations and evidence - only speculate if no clear logical conclusion exists but there is a clear common sense explenation. The conclusion must be a factual sentence about the environment in concise simple language that when added to the original goal helps the agent make a better plan to achieve its goal in the next planning round. The conclusion must be worded **in terms of observation fields, NOT actions**. \n" + 
-
-                        "If you need to speculate, make sure to be clear about that in your answer. For example, use phrases like 'it might' or 'it is possible'. \n" +
-                        
-                        "CRITICAL RULES:\n" +
-                        "- make sure your answer is worded in a way that is relevant to the agent's goal and considers the action that was just performed as its main idea\n" +
-                        "- IF AND ONLY IF the mismatch does not throw the agent off its plan's track, simply state the learned fact. Do not speculate or make things up.\n"+
-                        "- think and provide the best answer as shown above\n" +
-                        "- Do not generalize based on common sense if the actual observation contradicts it\n" +
-                        "- Base conclusions on logical deduction from the evidence/observation fields\n" +
-                        "- Don't list field comparisons\n" +
-                        "- Don't mention non boolean fields\n" +
-                        "- Use your memory of previous observations when needed to make a logical conclusion about how different components of the environment work and interact (the conclusion is never about the agent, just about the environment components)\n\n"+
-                        
-                        "EXAMPLE:\n" +
-                        "Goal is to move the car" +
-                        "Expected: carmoving: true\n" +
-                        "Actual: carmoving: false, parkingbreakon: true\n" +
-                        "Actual from previous action step: carmoving: true, parkingbreakon: false" +
-                        "→ Output: `The car will not move while the parking break is on. `\n\n" ;
-
-
-                String temp = "";
-
-                    try {
-                        Thread.sleep(40000);
-
-                        try {
-                            response = TRADE.getAvailableService(new TRADEServiceConstraints()
-                                        .name("responses")
-                                        .argTypes(String.class, String.class, String.class))
-                                        .call(OpenaiResponses.class, "o3-mini-2025-01-31", obs_prompt , new_user_id);
-
-                            new_user_id = response.id;
-
-                            if (response.output != null && !response.output.isEmpty()) {
-                                
-                                // Iterate through the output to find the 'message' type
-                                for (OpenaiResponses.Output outputItem : response.output) {
-                                    if ("message".equals(outputItem.type)) {
-                                        if (outputItem.content != null && !outputItem.content.isEmpty()) {
-                                            temp = outputItem.content.get(0).text;
-                                            break; // Exit the loop once the message is found
-                                        } else {
-                                            log.error("Message output has no content.");
-                                        }
-                                    }
-                                }
-                            } else {
-                                log.error("No output in response.");
-                            }
-                        
-                        } catch (TRADEException e) {
-                            log.error("Error calling LLM service for parseGoals.", e);
-                            return;
-                        }
-
-                        log.info("Answer: {}" , temp);
-
-                    } catch (InterruptedException e) {
-                                // Handle the case where the sleep is interrupted
-                                Thread.currentThread().interrupt(); // Restore the interrupted status
+                    if (!mismatches.isEmpty()) {
+                        missmatch_input = String.join("\n ", mismatches);
                     }
 
-                    obs_answer += temp; 
-                    obs_answer += " " ;
+                    
+                } else {
+                    missmatch_input = "The action was expected to fail but it performed.";
+                }
+                
+                log.info("\n\nMISMATCH?\n\n");
+
+
+                if (missmatch_input != null) {
+
+                    
+
+                    log.warn("Observation mismatch detected after action '{}'. Learning from outcome.", line);
+                    log.info(missmatch_input);
 
                     try {
-                            response = TRADE.getAvailableService(new TRADEServiceConstraints()
-                                        .name("responses")
-                                        .argTypes(String.class, String.class, String.class))
-                                        .call(OpenaiResponses.class, "o3-mini-2025-01-31", "Now, following the same rules as above, consider all the facts below that the agent has learned from interacting with its environment and make a coherent, concise statement (up to 3 sentences) in simple and clear language, about the environment that draws a logical conclusion from all these statements, worded in terms of the environment elements and the agent's goal to acomplish. If the agent made a speculation that was wrong, make sure to accurately reflect that. \n GOAL: " + input + " \n LEARNED FROM ENVIRONMENT: " + obs_answer , new_user_id);
-
-                            new_user_id = response.id;
-
-                            if (response.output != null && !response.output.isEmpty()) {
-                                
-                                // Iterate through the output to find the 'message' type
-                                for (OpenaiResponses.Output outputItem : response.output) {
-                                    if ("message".equals(outputItem.type)) {
-                                        if (outputItem.content != null && !outputItem.content.isEmpty()) {
-                                            temp = outputItem.content.get(0).text;
-                                            break; // Exit the loop once the message is found
-                                        } else {
-                                            log.error("Message output has no content.");
-                                        }
-                                    }
-                                }
-                            } else {
-                                log.error("No output in response.");
-                            }
-
-                        } catch (TRADEException e) {
-                            log.error("Error calling LLM service for parseGoals.", e);
-                            return;
-                        }
-
-                        log.info("Answer: {}" , temp);
-
-                    try {
-                        Thread.sleep(40000);
 
                         try {
+                            // Pause for 2 seconds
+                            Thread.sleep(2000); 
+                            System.out.println("Resumed after 2 seconds.");
 
-                            String second_prompt = """
-                            You are an AI planner for an autonomous robot agent. Your task is to produce a logically valid and creative plan — a sequence of necessary actions — that the agent can perform to achieve its goal.
+                        } catch (InterruptedException e) {
+                            System.err.println("Thread was interrupted!");
+                            // Re-interrupt the current thread to propagate the interruption status
+                            Thread.currentThread().interrupt(); 
+                        }
 
-                            You must:
+                        String obs_prompt = observationTemplate
+                                .replace("{obs}", obs)
+                                .replace("{line}", line)
+                                .replace("{input}", originalGoal)
+                                .replace("{mismatches}", missmatch_input)
+                                .replace("{new_obs}", new_obs);
+
+                        OpenaiResponses response = TRADE.getAvailableService(new TRADEServiceConstraints()
+                                        .name("responses")
+                                        .argTypes(String.class, String.class, String.class))
+                                .call(OpenaiResponses.class, "o4-mini-2025-04-16", obs_prompt, this.user_id);
+
+                        this.user_id = response.id;
+                        String obs_answer = "";
+                        if (response.output != null && !response.output.isEmpty()) {
+                            for (OpenaiResponses.Output outputItem : response.output) {
+                                if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
+                                    obs_answer = outputItem.content.get(0).text;
+                                    break;
+                                }
+                            }
+                        }
+                        log.info("Learned new knowledge from mismatch: {}\n\n", obs_answer);
+                        new_knowledge += obs_answer + ". ";
+                        
+
+                        if(!obs_answer.startsWith("NO REPLAN NEEDED") && !obs_answer.startsWith("NON OBSERVABLE")) {
+                        
+                            additional_prompt = "The plan you just produced was invalid because an action you performed did not have the effects you were expecting. Here is what you learned from your environment from that experience: \n" + obs_answer + "\nWith that in mind, regenerate a valid plan following the rules below to achieve your main goal. " + originalGoal + " You must use this new learned knowledge in your new plan. You must consider different strategies. Remember, you can use everything in your surrounding environment (in your pl file or observations) but you are not aware of everything in your environment (hence you can look for things)";
+
+                            actionIndex = actions.size() + 1;
+
+                            // String answer = retryPlan(failureReason.toString(), "obs");
+                            // if (answer != null && !answer.isEmpty()) {
+                            //     actions = answer.split("\n");
+                            //     actionIndex = 0;
+                            // } else {
+                            //     log.error("Failed to get a valid retry plan. Aborting.");
+                            //     return;
+                            // }
+                            continue; // Restart the loop with the new plan
+
+                        }
+                        else {
+
+                  
+                            log.info("no replan needed, checking for non observable effects\n");
+                            // remove "no replan needed" from obs_answer and add it to new_knowledge
+                            if (obs_answer.startsWith("NO REPLAN NEEDED")) {
+
+                                obs_answer = obs_answer.replace("NO REPLAN NEEDED", "").trim();
+                                if (!obs_answer.isEmpty()) {
+                                    new_knowledge += obs_answer + ". ";
+                                }
+
                             
-                            - Only use actions defined in the .asl file, and use them **exactly** as named (e.g., `pressswitch()`).
-                            - Respect all preconditions for each action. A precondition must be satisfied at the time the action is executed. A precondition like `pre: isAtBox` means that `isAtBox` must be in the current environment state when the action is performed.
-                            - A precondition prefixed with `~` (e.g., `~isHoldingBox`) means the fact must be **false** (i.e., not present in the current state).
-                            - Effects (under `success:`) are facts that become true after the action is successfully executed. But they are not always the only effects of the action being performed (e.g., if the agent performs spillwater() on a table, isTableWet() would be true. Hence use common sense when it comes to objects in the agent's environment interacting ).
-                            - The agent's initial state is defined by the environment state and its beliefs.
-                            - Do not just add actions. Performing an action must serve a purpose, bringing the agent closer to achieving its goal.
-                            - Make sure to refer to your previous plan and learn from your mistakes, but do not change things you were right about.
 
-                            You are encouraged to:
-                            - Use **common sense** and reason **creatively** with the available actions to achieve the goal, even if the goal is not directly achievable with a single action.
-                            - Chain together actions in ways that produce intermediate conditions needed for later steps.
-                            - Use tools, objects, or the environment in creative ways — for example, moving to intermediate locations if necessary.
+                            } 
+                            
 
-                            OUTPUT FORMAT:
-                            Return a **valid and logically ordered** plan using only the actions from the .asl file. Each step should include:
-
-                            1. The action name (e.g., `moveToBox()`) (Do not include any other text on this line, and even if the action takes no arguments, include the parentheses)
-                            2. The ENVIRONMENT STATE (observations) JSON (all in one line, no
-                             characters in there.) :
-                            - edit the json's boolean observation values to represent what you expect them to be after the action is executed. **Use `null` for values that are irrelevant or not booleans (true/false) **.
-
-
-                            - Only include fields from the observation JSON, in the same order.
-                            - Do **not** explain the reasoning.
-                            - The plan must be valid: all preconditions must be met at the time each action is executed.
-                            - Only include actions from the .asl file and use them exactly as named.
-                            - IMPORTANT: **Use your common sense and the success fields to predict what the observation boolean fields would be. Then use the expected observation boolean field to make sure the pre conditions for actions you want to perform next are met.** Make sure to base all your expected observation fields on 1. What you have learned through experience from your environment (priority), carefully, without over generalizing, and 2. Common sense and why you chose the actions to achieve the goal. **Make sure to refer to the conversation memory and learn from your mistakes, but do not change things you were right about.**
-
-
-                            TASK TO ACCOMPLISH:
-                            {GOAL}
-
-                            LAST ACTION PERFOMED FROM PREVIOUS PLAN:
-                            {PREV_PLAN}
-
-                            OBSERVATION WHILE THAT ACTION WAS PERFORMED:
-                            {PREV_OBS}
-
-                            LEARNED FROM ENVIRONMENT AND PREVIOUS MISTAKES: 
-                            {KNOWLEDGE}
-
-                            CURRENT ENVIRONMENT STATE (observations):  
-                            {OBS}
-
-                            AVAILABLE ACTIONS (.asl format):  
-                            {ASL}
-
-                            ROBOT'S INITIAL BELIEFS (.pl format):  
-                            {BELIEFS}
-
-
-                            EXAMPLE: 
-                            Given the goal clean the room, and actions moveto(location), pickup(object), putdown(object) among others, and observation {isHoldingObject: false, agentLocation: [10,10] , toyLocation: [50,50] , chestLocation: [100,100]}, the plan would be:
-                            moveto([50,50])
-                            {isHoldingObject: false, agentLocation: null , toyLocation: null , chestLocation: null}
-                            pickup(toy)
-                            {isHoldingObject: true, agentLocation: null , toyLocation: null , chestLocation: null}
-                            moveto([100,100])
-                            {isHoldingObject: true, agentLocation: null , toyLocation: null , chestLocation: null}
-                            putdown(toy)
-                            {isHoldingObject: false, agentLocation: null , toyLocation: null , chestLocation: null}
-                                    
-                                    """;
-
-                            String newFilledPrompt = promptTemplate
-                                .replace("{GOAL}", input + " with background knowledge that: " + temp + " \nMake sure 1. not to repeat plans that you have already tried(use conversation memory)")
+                            String validation_prompt = validationTemplate
                                 .replace("{OBS}", new_obs)
+                                .replace("{line}", line)
+                                .replace("{goal}", originalGoal)
+                                .replace("{mismatches}", obs_answer)
                                 .replace("{BELIEFS}", beliefContents)
                                 .replace("{ASL}", aslContents);
 
-                            newFilledPrompt += " IMPORTANT: make sure to base all your expected observation fields on 1.What you have learned through experience from your environment (priority), carefully, without over generalizing, and 2. Common sense and why you chose the actions to achieve the goal. **Make sure to refer to the conversation memory and learn from your mistakes, but do not change things you were right about.** ";
-                            
-                            String new_prompt = 
-                            "You are an AI planner for a robot agent. Your task is to generate a precise and executable sequence of actions to achieve a specific goal.\n" +
-                            "You must strictly obey action preconditions and only use actions that are defined in the available .asl file.\n\n" +
-
-                            "TASK TO ACCOMPLISH:\n" + input + "\n\n" +
-
-                            "LEARNED FROM OBSERVATION: " + answer + "\n\n" +
-
-                            "CURRENT ENVIRONMENT STATE:\n" + new_obs + "\n\n" +
-
-                            "ROBOT'S INITIAL BELIEFS (.pl format):\n" + beliefContents + "\n\n" +
-
-                            "AVAILABLE PRIMARY ACTIONS (.asl format):\n" + aslContents + "\n\n" +
-
-                            "ACTION FORMAT STRUCTURE (.asl):\n" +
-                            "Each action has the form:\n" +
-                            "actionname[\"description\"]() {\n" +
-                            "  conditions: {\n" +
-                            "    pre: [precondition1];\n" +
-                            "    pre infer: [precondition2];\n" +
-                            "  }\n" +
-                            "  effects: {\n" +
-                            "    success: [effect1];\n" +
-                            "  }\n" +
-                            "}\n\n" ;
-
-
                             response = TRADE.getAvailableService(new TRADEServiceConstraints()
                                         .name("responses")
                                         .argTypes(String.class, String.class, String.class))
-                                        .call(OpenaiResponses.class, "o3-mini-2025-01-31" , newFilledPrompt , new_user_id);
+                                .call(OpenaiResponses.class, "o4-mini-2025-04-16", validation_prompt, this.user_id);
 
-                            new_user_id = response.id;
-                       
-
+                            this.user_id = response.id;
+                            String val_answer = "";
                             if (response.output != null && !response.output.isEmpty()) {
-                                
-                                // Iterate through the output to find the 'message' type
                                 for (OpenaiResponses.Output outputItem : response.output) {
-                                    if ("message".equals(outputItem.type)) {
-                                        if (outputItem.content != null && !outputItem.content.isEmpty()) {
-                                            answer = outputItem.content.get(0).text;
-                                            break; // Exit the loop once the message is found
-                                        } else {
-                                            log.error("Message output has no content.");
-                                        }
+                                    if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
+                                        val_answer = outputItem.content.get(0).text;
+                                        break;
                                     }
                                 }
-                            } else {
-                                log.error("No output in response.");
+                            }
+                            log.info("validation plan: {}\n\n", val_answer);
+
+                            if (!val_answer.startsWith("SUCCESS")) {
+                                log.info("need to check the non observable effects\n");
+                                // First add a line "END_VALIDATION" to the top of the actions array 
+                                // then add val_answer to the top of the actions array
+                                // then add to new_knowledge:
+                                // "VALIDATION: currently performing tasks to make sure the action " + line + " performed as expected and succeeded in non observable ways"
+                                actions.add(actionIndex + 1, "END_VALIDATION");
+                                actions.addAll(actionIndex + 1, Arrays.asList(val_answer.split("PLAN")[1].split("\n")));
+                                originalGoal += "VALIDATION: currently performing tasks to make sure the action " 
+                                    + line + " performed as expected and succeeded in non observable ways. ";
+
+                                //make sure if obs = FAILURE we dont replan
+                                // make sure if end validation is reached, the sentence adter VALIDATION is removed from the knowledge string. (last instance of it)
                             }
 
-
-
-
-                            log.info("Prompt LLM got: " + newFilledPrompt);
-                        } catch (TRADEException e) {
-                            log.error("Error calling LLM service for parseGoals.", e);
-                            return;
+                            actionIndex++;
                         }
 
-                        
 
-                        log.info("Answer from LLM second round: " + answer);
-                        actions = answer.split("\n");
-                        actionIndex = 0; // <-- RESTART plan execution with new list
-                        continue;
-                            
-                        } catch (InterruptedException e) {
-                            // Handle the case where the sleep is interrupted
-                            Thread.currentThread().interrupt(); // Restore the interrupted status
-                        }
+                    } catch (TRADEException e) {
+                        log.error("Error calling LLM for observation learning.", e);
+                        actionIndex++; // Failsafe: move on despite error
+                    }
+                } else {
+                    log.info("Observation matches expectation. checking for non-observable effects.");
+                    try {
+
                     
+                        String validation_prompt = validationTemplate
+                            .replace("{OBS}", new_obs)
+                            .replace("{line}", line)
+                            .replace("{goal}", originalGoal)
+                            .replace("{mismatches}", "No missmatches detected")
+                            .replace("{BELIEFS}", beliefContents)
+                            .replace("{ASL}", aslContents);
+
+                        OpenaiResponses response = TRADE.getAvailableService(new TRADEServiceConstraints()
+                                    .name("responses")
+                                    .argTypes(String.class, String.class, String.class))
+                            .call(OpenaiResponses.class, "o4-mini-2025-04-16", validation_prompt, this.user_id);
+
+                        this.user_id = response.id;
+                        String val_answer = "";
+                        if (response.output != null && !response.output.isEmpty()) {
+                            for (OpenaiResponses.Output outputItem : response.output) {
+                                if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
+                                    val_answer = outputItem.content.get(0).text;
+                                    break;
+                                }
+                            }
+                        }
+                        log.info("validation plan: {}\n\n", val_answer);
+
+                        if (!val_answer.startsWith("SUCCESS")) {
+                            // First add a line "END_VALIDATION" to the top of the actions array 
+                            // then add val_answer to the top of the actions array
+                            // then add to new_knowledge:
+                            // "VALIDATION: currently performing tasks to make sure the action " + line + " performed as expected and succeeded in non observable ways"
+                            actions.add(actionIndex + 1, "END_VALIDATION");
+                            actions.addAll(actionIndex + 1, Arrays.asList(val_answer.split("PLAN")[1].split("\n")));
+                            originalGoal += "VALIDATION: currently performing tasks to make sure the action " 
+                                + line + " performed as expected and succeeded in non observable ways. ";
+
+                            //make sure if obs = FAILURE we dont replan
+                            // make sure if end validation is reached, the sentence adter VALIDATION is removed from the knowledge string. (last instance of it)
+                        }
+
+                        actionIndex++; // No mismatch, perfect success. Move to the next action.
+                    
+                    } catch (TRADEException e) {
+                        log.error("Error calling LLM for observation learning.", e);
+                        actionIndex++; // Failsafe: move on despite error
+                    }
                 }
-                obs = new_obs;     
-                
-                actionIndex ++; // Only go to next step if plan still valid
 
+            } else if (state == GoalStatus.fromString("FAILED")) {
+                /***************************/
+                /* FAILURE CASE            */
+                /***************************/
+                log.warn("Goal failed: {}. Attempting to diagnose the failure.\n\n", predicate);
+                if (actions.get(actionIndex + 1).equals("FAILURE")) {
+                    actionIndex++;
+                    continue; 
+                }
 
-                
-            } catch (TRADEException e) {
-                log.error("Failed to submit goal or get goal status for {}:", predicate, e);
+                try {
+                    String filledGuessingPrompt = guessingTemplate
+                            .replace("{input}", originalGoal)
+                            .replace("{line}", line)
+                            .replace("{obs}", obs)
+                            .replace("{beliefContents}", beliefContents)
+                            .replace("{aslContents}", aslContents);
+
+                    OpenaiResponses replanresponse = TRADE.getAvailableService(new TRADEServiceConstraints()
+                                    .name("responses")
+                                    .argTypes(String.class, String.class, String.class))
+                            .call(OpenaiResponses.class, "o4-mini-2025-04-16", filledGuessingPrompt, this.user_id);
+
+                    this.user_id = replanresponse.id;
+                    String replananswer = "";
+                    if (replanresponse.output != null && !replanresponse.output.isEmpty()) {
+                        for (OpenaiResponses.Output outputItem : replanresponse.output) {
+                            if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
+                                replananswer = outputItem.content.get(0).text;
+                                break;
+                            }
+                        }
+                    }
+
+                    // Process the diagnosis and update the exploration queue
+                    if (!replananswer.isEmpty()) {
+                        clueAdded = true; 
+                        log.info("LLM diagnosis for failure:\n {}\n\n", replananswer);
+                        
+                        String[] responseLines = replananswer.trim().split("\\R");
+                        if (responseLines.length > 0 && responseLines[0].trim().equalsIgnoreCase("FAILURE TO DIAGNOSE")) {
+                            if (!clueQueue.isEmpty()) {
+                                String failedClue = clueQueue.pollLast();
+                                cluePopped = true; 
+                                log.info("Diagnosis failed. Discarding current clue as a dead end: '{}'\n", failedClue);
+                            }
+                        } else {
+                            List<String> newSuggestions = new ArrayList<>();
+                            for (String suggestionLine : responseLines) {
+                                String cleanSuggestion = suggestionLine.replaceAll("^\\d+[.)]?\\s*", "").trim();
+                                if (!cleanSuggestion.isEmpty()) {
+                                    newSuggestions.add(cleanSuggestion);
+                                }
+                            }
+                            Collections.reverse(newSuggestions); // Add to front of queue in order
+                            if(!explorationQueue.isEmpty()) {
+                                explorationQueue.addFirst("POP CLUE");
+                                log.info("new queue on stack \n\n");
+                            }
+                            for (String suggestion : newSuggestions) {
+                                explorationQueue.addFirst(suggestion);
+                                log.info("Adding new exploration hypothesis to queue: '{}'\n", suggestion);
+                            }
+                        }
+                        
+                    }
+                } catch (TRADEException e) {
+                    log.error("Error calling LLM for failure diagnosis.", e);
+                }
+                // Force a replan to handle the failure
+                actionIndex = actions.size() + 1;
             }
+            
 
-
+            // Update our view of the world state for the next loop iteration
+            obs = new_obs;
         }
-        
-
-        return;
-
-
     }
-    
 }

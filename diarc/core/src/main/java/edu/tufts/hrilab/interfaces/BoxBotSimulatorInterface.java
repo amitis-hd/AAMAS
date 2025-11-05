@@ -42,150 +42,39 @@ public interface BoxBotSimulatorInterface {
     @Observes({ "westOf(?object)" })
     public List<HashMap<Variable, Symbol>> westOf(Term objectTerm);
 
-      /**
-     * Checks whether the robot is currently north of the box.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not north of the box, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "northOfBox()" })
-    public List<HashMap<Variable, Symbol>> northOfBox(Term term);
-
-    /**
-     * Checks whether the robot is currently south of the box.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not south of the box, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "southOfBox()" })
-    public List<HashMap<Variable, Symbol>> southOfBox(Term term);
-
-    /**
-     * Checks whether the robot is currently east of the box.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not east of the box, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "eastOfBox()" })
-    public List<HashMap<Variable, Symbol>> eastOfBox(Term term);
-
-    /**
-     * Checks whether the robot is currently west of the box.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not west of the box, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "westOfBox()" })
-    public List<HashMap<Variable, Symbol>> westOfBox(Term term);
-
-
-    /**
-     * Checks whether the robot is currently north of the Chest.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not north of the box, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "northOfChest()" })
-    public List<HashMap<Variable, Symbol>> northOfChest(Term term);
-
-    /**
-     * Checks whether the robot is currently south of the chest.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not south of the box, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "southOfChest()" })
-    public List<HashMap<Variable, Symbol>> southOfChest(Term term);
-
-    /**
-     * Checks whether the robot is currently east of the chest.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not east of the box, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "eastOfChest()" })
-    public List<HashMap<Variable, Symbol>> eastOfChest(Term term);
-
-    /**
-     * Checks whether the robot is currently west of the chest.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not west of the box, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "westOfChest()" })
-    public List<HashMap<Variable, Symbol>> westOfChest(Term term);
-
-    /**
-     * Checks whether the robot is currently north of the switch.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not north of the switch, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "northOflightButton()" })
-    public List<HashMap<Variable, Symbol>> northOflightButton(Term term);
-
-    /**
-     * Checks whether the robot is currently south of the switch.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not south of the switch, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "southOflightButton()" })
-    public List<HashMap<Variable, Symbol>> southOflightButton(Term term);
-
-    /**
-     * Checks whether the robot is currently east of the switch.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not east of the switch, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "eastOflightButton()" })
-    public List<HashMap<Variable, Symbol>> eastOflightButton(Term term);
-
-    /**
-     * Checks whether the robot is currently west of the switch.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not south of the west, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "westOflightButton()" })
-    public List<HashMap<Variable, Symbol>> westOflightButton(Term term);
-
-    /**
-     * Checks whether the robot is currently at the switch.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not at the switch, non-empty list if it is.
-     */
-    @TRADEService 
-    @Observes({ "isAtlightButton()" })
-    public List<HashMap<Variable, Symbol>> isAtlightButton(Term term);
-
     @TRADEService 
     @Observes({ "isHoldingItem()" })
     public List<HashMap<Variable, Symbol>> isHoldingItem(Term term);
 
-    /**
-     * Checks whether the robot is currently at the switch.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not at the switch, non-empty list if it is.
-     */
     @TRADEService 
-    @Observes({ "isAtChest()" })
-    public List<HashMap<Variable, Symbol>> isAtChest(Term term);
+    @Observes({ "isHandExtended()" })
+    public List<HashMap<Variable, Symbol>> isHandExtended(Term term);
+
+    @TRADEService 
+    @Observes({ "isHandRotated()" })
+    public List<HashMap<Variable, Symbol>> isHandRotated(Term term);
+    @TRADEService 
+    @Observes({ "atOpenning()" })
+    public List<HashMap<Variable, Symbol>> atOpenning(Term term);
+    @TRADEService 
+    @Observes({ "locationChanged()" })
+    public List<HashMap<Variable, Symbol>> locationChanged(Term term);
+
+    @TRADEService 
+    @Observes({ "isPierced()" })
+    List<HashMap<Variable, Symbol>> isPierced(Term targetTerm);
+    @TRADEService 
+    @Observes({ "isMoved()" })
+    List<HashMap<Variable, Symbol>> isMoved(Term objectTerm);
+    @TRADEService 
+    @Observes({ "isSqueezed()" })
+    List<HashMap<Variable, Symbol>> isSqueezed(Term objectTerm);
+    @TRADEService 
+    @Observes({ "isFull()" })
+    public List<HashMap<Variable, Symbol>> isFull(Term objectTerm);
+    // @TRADEService 
+    // @Observes({ "getlocation()" })
+    // public List<HashMap<Variable, Symbol>> getlocation(Term term);
 
         /**
      * Checks whether the robot is currently at the switch.
@@ -227,58 +116,15 @@ public interface BoxBotSimulatorInterface {
     @Observes({ "lightsOff()" })
     public List<HashMap<Variable, Symbol>> lightsOff(Term term);
 
-    /**
-     * Checks whether the robot is currently north of the center of the door.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not north of the center of the door, non-empty
-     * list if it is.
-     */
     @TRADEService
-    @Observes({ "northOfDoorCenter()" })
-    public List<HashMap<Variable, Symbol>> northOfDoorCenter(Term term);
+    @Observes({ "isElevated()" })
+    public List<HashMap<Variable, Symbol>> isElevated(Term targetTerm);
 
-    /**
-     * Checks whether the robot is currently south of the center of the door.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not south of the center of the door, non-empty
-     * list if it is.
-     */
     @TRADEService
-    @Observes({ "southOfDoorCenter()" })
-    public List<HashMap<Variable, Symbol>> southOfDoorCenter(Term term);
+    @Observes({ "isUnder(?object, ?destination)" })
+    public List<HashMap<Variable, Symbol>> isUnder(Term objectTerm, Term baseTerm);
 
-   /**
-     * Checks whether the robot is currently east of the door.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not east of the door, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "eastOfDoor()" })
-    public List<HashMap<Variable, Symbol>> eastOfDoor(Term term);
-
-    /**
-     * Checks whether the robot is currently at the door.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if not at the door, non-empty list if it is.
-     */
-    @TRADEService
-    @Observes({ "isAtDoor()" })
-    public List<HashMap<Variable, Symbol>> isAtDoor(Term term);
-
-    /**
-     * Checks whether the robot is capable of moving west.
-     * 
-     * @param term observer term (unused)
-     * @return Empty list if robot can't move west, non-empty list if it can.
-     */
-    @TRADEService
-    @Observes({ "canMoveWest()" })
-    public List<HashMap<Variable, Symbol>> canMoveWest(Term term);
-
+    
     /*************************************
      * ACTIONS
      *************************************/
@@ -291,6 +137,11 @@ public interface BoxBotSimulatorInterface {
     @TRADEService
     @Action
     Justification getObservation();
+
+
+    
+
+    
     
     /**
      * Action to request to move the robot west.
@@ -335,7 +186,7 @@ public interface BoxBotSimulatorInterface {
      */
     @TRADEService
     @Action
-    Justification toggleHold();
+    Justification toggleHold(Term term);
 
     /**
      * Action to request the robot to open an object.
@@ -344,7 +195,11 @@ public interface BoxBotSimulatorInterface {
      */
     @TRADEService
     @Action
-    Justification open();
+    Justification open(Term term);
+
+    @TRADEService
+    @Action
+    Justification move(Term term);
 
     /**
      * Action to request the robot to close an object.
@@ -353,7 +208,7 @@ public interface BoxBotSimulatorInterface {
      */
     @TRADEService
     @Action
-    Justification close();
+    Justification close(Term term);
 
         /**
      * Action to request the robot to Push a hand.
@@ -373,14 +228,13 @@ public interface BoxBotSimulatorInterface {
     @Action
     Justification lift();
 
-    /**
-     * Action to request the robot to Lift a hand.
-     * 
-     * @return justification describing the result of the request.
-     */
     @TRADEService
     @Action
-    Justification insert();
+    Justification extend();
+
+    @TRADEService
+    @Action
+    Justification retract();
 
     /**
      * Action to request the robot to Lift a hand.
@@ -389,7 +243,56 @@ public interface BoxBotSimulatorInterface {
      */
     @TRADEService
     @Action
-    Justification rotate();
+    Justification insert(Term objectTerm, Term destinationTerm);
+
+    @TRADEService
+    @Action
+    Justification insertbetween(Term objectTerm, Term left_objTerm, Term right_objTerm);
+
+    /**
+     * Action to request the robot to Lift a hand.
+     * 
+     * @return justification describing the result of the request.
+     */
+    @TRADEService
+    @Action
+    Justification rotate(Term term);
+
+    @TRADEService
+    @Action
+    Justification put(Term objectTerm, Term destinationTerm);
+
+    @TRADEService
+    @Action
+    Justification grasp(Term term);
+
+    @TRADEService
+    @Action
+    Justification sweepMotion(Term toolTerm, Term targetTerm, Term surfaceTerm);
+
+    @TRADEService
+    @Action
+    Justification dragMotion(Term objectTerm, Term destinationTerm);
+
+    @TRADEService
+    @Action
+    public Justification pierceMotion(Term toolTerm, Term targetTerm);
+
+    @TRADEService
+    @Action
+    public Justification squeezeMotion(Term objectTerm);
+
+    @TRADEService
+    @Action
+    public Justification goDownMotion();
+
+    @TRADEService
+    @Action
+    public Justification goUpMotion(Term objectTerm);
+
+    @TRADEService
+    @Action
+    Justification putUnderMotion(Term objectTerm, Term destinationTerm);
 
     
 }

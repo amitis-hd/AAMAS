@@ -10,7 +10,7 @@ from env import SimulatorEnv
 
 import pygame
 
-ACTION_COMMANDS = ['NORTH', 'SOUTH', 'WEST', 'EAST', 'TOGGLE_HOLD', 'GET_OBSERVATION', 'RESET', 'OPEN', 'CLOSE', 'PUSH', 'LIFT', 'INSERT', 'ROTATE']
+ACTION_COMMANDS = ['NORTH', 'SOUTH', 'WEST', 'EAST', 'TOGGLE_HOLD', 'GET_OBSERVATION', 'RESET', 'OPEN', 'CLOSE', 'PUSH', 'LIFT', 'INSERT', 'ROTATE', 'ENTER', 'MOVE', 'EXTEND', 'RETRACT', 'INSERTBETWEEN', 'GRASP', 'PUT', 'SWEEP', 'DRAG', 'POKE', 'SQUEEZE', 'GOUP' , 'GODOWN', 'PUTUNDER']
 
 def serialize_data(data):
     if isinstance(data, set):
@@ -47,6 +47,18 @@ class BoxBotEventHandler:
                         self.env.step(PlayerAction.LIFT)
                         self.env.step(PlayerAction.INSERT)
                         self.env.step(PlayerAction.ROTATE)
+                        self.env.step(PlayerAction.ENTER)
+                        self.env.step(PlayerAction.EXTEND)
+                        self.env.step(PlayerAction.RETRACT)
+                        self.env.step(PlayerAction.GRASP)
+                        self.env.step(PlayerAction.PUT)
+                        self.env.step(PlayerAction.SWEEP)
+                        self.env.step(PlayerAction.DRAG)
+                        self.env.step(PlayerAction.POKE)
+                        self.env.step(PlayerAction.SQUEEZE)
+                        self.env.step(PlayerAction.GOUP)
+                        self.env.step(PlayerAction.GODOWN)
+                        self.env.step(PlayerAction.PUTUNDER)
 
                     elif event.key == pygame.K_r:
                         self.env.step(PlayerAction.RESET)
@@ -111,8 +123,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    # np.random.seed(0)
-
     # Make the env
     env = SimulatorEnv()
 
@@ -148,22 +158,39 @@ if __name__ == "__main__":
                 sock = key.fileobj
                 data = key.data
                 if mask & selectors.EVENT_READ:
-                    recv_data = sock.recv(4096)  # Should be ready to read
+                    recv_data = sock.recv(4096)
                     if recv_data:
                         data.inb += recv_data
                         if len(recv_data) < 4096:
-                            #  We've hit the end of the input stream; now we process the input
-                            command = data.inb.decode().strip()
+                            command_str = data.inb.decode().strip()
                             data.inb = b''
+                            
+                            # Try to parse as JSON first
+                            try:
+                                command_data = json.loads(command_str)
+                                if isinstance(command_data, dict) and 'action' in command_data:
+                                    command = command_data['action']
+                                    #print("the command is: {}", command)
+                                    # Extract all parameters except 'action'
+                                    params = {k: v for k, v in command_data.items() if k != 'action'}
+                                    #print("the parameters are: {}".format(params))
+                                else:
+                                    command = command_str
+                                    params = {}
+                            except json.JSONDecodeError:
+                                # Fall back to simple string command
+                                command = command_str
+                                params = {}
+                            
                             e.append((key, mask, command))
+                            
                             if command in ACTION_COMMANDS:
                                 curr_action = PlayerActionTable[command]
+                                # Attach all parameters to the action
+                                curr_action.params = params
                                 should_perform_action = True
                             else:
                                 info = {'result': False, 'step_cost': 0.0, 'message': 'Invalid Command'}
-                                print("obs:", obs)
-                                print("obs serialized:", serialize_data(obs))
-                                print("obs json string:", json.dumps(serialize_data(obs)))
                                 json_to_send = get_action_json(command, env, None, 0., False, info)
                                 data.outb = str.encode(json.dumps(json_to_send) + "\n")
                     else:
@@ -182,7 +209,6 @@ if __name__ == "__main__":
                 json_to_send = get_action_json(command, env, obs, reward, done, info)
                 
                 data = key.data
-                #data.outb = str.encode(json.dumps(json_to_send) + "\n")
 
                 # Serialize the data to ensure it's JSON-serializable
                 json_to_send_serialized = serialize_data(json_to_send)   
