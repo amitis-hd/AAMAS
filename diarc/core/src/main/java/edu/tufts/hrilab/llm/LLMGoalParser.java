@@ -271,55 +271,7 @@ public class LLMGoalParser extends DiarcComponent {
         return true;
     }
 
-    /**
-     * Triggers replanning after validation or execution failure
-     * @param issue Explanation of what went wrong
-     * @param type "obs" for observation mismatch, otherwise precondition failure
-     * @return New plan from LLM
-     */
-    private String retryPlan(String issue, String type) {
-        String plan = "";
-        String obs = getObservation();
-        
-        try {
-            Thread.sleep(2000);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
-
-        String prompt = "The plan you just produced was invalid:\n" + issue +
-                "\nRegenerate a valid plan following the same rules. Your plan failed because you attempted action: " + 
-                type + " when its preconditions were not met. Consider satisfying the preconditions first. Current state: " + obs;
-        
-        if (type.equals("obs")) {
-            prompt = "The plan failed because an action did not have expected effects. What you learned:\n" + issue + 
-                    "\nRegenerate a valid plan considering this new knowledge. Current state: " + obs;
-        }
-
-        try {
-            OpenaiResponses responseObj = TRADE.getAvailableService(new TRADEServiceConstraints()
-                            .name("responses")
-                            .argTypes(String.class, String.class, String.class))
-                    .call(OpenaiResponses.class, "o4-mini-2025-04-16", prompt, this.user_id);
-
-            this.user_id = responseObj.id;
-
-            if (responseObj.output != null && !responseObj.output.isEmpty()) {
-                for (OpenaiResponses.Output outputItem : responseObj.output) {
-                    if ("message".equals(outputItem.type) && outputItem.content != null && !outputItem.content.isEmpty()) {
-                        plan = outputItem.content.get(0).text;
-                        break;
-                    }
-                }
-            }
-        } catch (TRADEException e) {
-            log.error("Error calling LLM service for replanning.", e);
-            return null;
-        }
-
-        log.info("Retried plan: {}", plan);
-        return plan;
-    }
+  
 
     /**
      * Node 6 (Algorithm 1, Line 25): Retrieves current world state via TRADE service
@@ -936,3 +888,4 @@ public class LLMGoalParser extends DiarcComponent {
         }
     }
 }
+
